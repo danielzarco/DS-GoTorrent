@@ -1,7 +1,8 @@
-#Authors: Daniel Zarco,Carlos Rincón 
+# coding=utf-8
+#Authors: Daniel Zarco,Carlos Rincón
 #Distributed Systems, ETSE
 
-from pyactor.context import set_context, create_host, sleep, shutdown
+from pyactor.context import set_context, create_host, sleep, shutdown, interval
 import random
 
 class Tracker(object):
@@ -31,12 +32,10 @@ class Tracker(object):
         else:
             #print "Torrent not found. Adding torrent..."
             self.swarm[torrent_id] = {peer_ref: 10}
-        print self.swarm
 
         peer = h.lookup(peer_ref)
         friends = self.get_peers(torrent_id)
         friends.remove(peer_ref)
-        print friends
         peer.get_friends(friends)
 
     def print_swarm(self):
@@ -44,8 +43,8 @@ class Tracker(object):
 
     #inicia los intervalos
     def init_start(self):
-        self.interval0= self.host.interval(1, self.proxy, "reduce_tiempo")
-        self.interval1 = self.host.interval(10, self.proxy, "elimina_peers")
+        self.interval0= interval(self.host, 1, self.proxy, "reduce_tiempo")
+        self.interval1 = interval(self.host, 10, self.proxy, "elimina_peers")
 
     def stop_interval(self):
         print "stopping tracker's interval"
@@ -54,7 +53,6 @@ class Tracker(object):
 
     #Decrementa contador de cada peer
     def reduce_tiempo(self):
-        print "reducing"
         torrents = self.swarm.keys()
         for torrent in torrents:
             for peer in self.swarm[torrent].keys():
@@ -66,8 +64,12 @@ class Tracker(object):
         torrents = self.swarm.keys()
         for torrent in torrents:
             for peer in self.swarm[torrent].keys():
+                print "comprobando" + torrent +":"+ peer
+                print self.swarm
                 if self.swarm[torrent][peer] <= 0:
+                    print "contador <= 0"
                     del self.swarm[torrent][peer]
+                    print self.swarm
 
 
     # The get_peers method is used to obtain a list of peers participating in this download. The tracker
@@ -75,13 +77,13 @@ class Tracker(object):
     # neighbors  get_peers(torrent_hash)
     def get_peers(self, torrent_id):
         peer_list = list(self.swarm[torrent_id].keys())
-        final_list = list(random.sample(peer_list, min(5,len(peer_list))))
+        final_list = list(random.sample(peer_list, min(5, len(peer_list))))
         return final_list
 
 class Peer(object):
-    _tell = ['start_announcing', 'announcing', 'add_tracker', 'stop_interval', 'get_friends', 'init_data', 'push', 'get_data']
-    _ask = ['get_id', 'receive_data']
-    _ref = ['announcing', 'push']
+    _tell = ['start_announcing', 'announcing', 'add_tracker', 'stop_interval', 'get_friends', 'init_data', 'push']
+    _ask = ['get_id', 'receive_data', 'get_data', 'print_data']
+    _ref = ['announcing', 'push', 'get_data']
     friends = []
     data = {}
 
@@ -90,14 +92,13 @@ class Peer(object):
 
     def add_tracker(self, tracker):
         self.tracker = tracker
-        print "Tracker added " , self.tracker
 
     def start_announcing(self, time, torrent):
-        self.interval0 = self.host.interval(time, self.proxy, "announcing", torrent)
+        self.interval0 = interval(self.host, time, self.proxy, "announcing", torrent)
         #self.host.later(10, self.proxy, "stop_interval")
 
     def stop_interval(self):
-        print "stopping inpeer.print_data()terval"
+        print "stopping peer interval"
         self.interval0.set()
 
     #Call to the announce method of the tracker
@@ -109,29 +110,31 @@ class Peer(object):
     #Method to receive the list of neighbours
     def get_friends(self, friends):
         self.friends = friends
-        print "------------------ open---------------"
-        print self.get_id() , self.friends
-        print "------------------ close -------------"
 
     def print_data(self):
-        print self.data
+        print "This is data", self.data
+
+    def get_data(self):
+        return self.data
 
     #Initializing the string to share (seed)
     def init_data(self):
-        self.data = {0:'G', 1:'O', 2:'T', 3:'O', 4:'R', 5:'R', 6:'E', 7:'N', 8:'T'}
-        print self.data
+        self.data = {0: 'G', 1: 'O', 2: 'T', 3: 'O', 4: 'R', 5: 'R', 6: 'E', 7: 'N', 8: 'T'}
 
     #Save the chunk of data sent by another peer
     def receive_data(self, chunk_id, chunk_data):
         if chunk_id not in self.data:
             self.data[chunk_id] = chunk_data
+            print "He recibido: ", self.get_id(), self.data
 
     #Best friends are the neighbours of one peer
     def push(self, chunk_id, chunk_data):
-        best_friends = random.sample(self.friends, min(2,len(self.friends)))
+        best_friends = random.sample(self.friends, min(2, len(self.friends)))
         for best_friend in best_friends:
             #Sends data to best friend
-            h.lookup(best_friend).receive_data(chunk_id, chunk_data)
+            print "my best friend is ", best_friend
+            beffe = h.lookup(best_friend)
+            beffe.receive_data(chunk_id, chunk_data)
 
 if __name__ == "__main__":
     set_context()
@@ -147,6 +150,7 @@ if __name__ == "__main__":
     peer4 = h.spawn('peer4', Peer)
 
     peer.init_data()
+    peer.print_data()
 
     peer.add_tracker(tracker)
     peer1.add_tracker(tracker)
@@ -162,17 +166,21 @@ if __name__ == "__main__":
     peer4.start_announcing(1, 'torrent1')
 
 
-    sleep(1)
-    #peer.push(0, 'G')
-    #peer1.print_data()
-    #peer2.print_data()
-    #peer3.print_data()
-    #peer4.print_data()
+    sleep(3)
+    x=0
+
+
+    while x<20:
+        num=random.randint(0, 8)
+        peer.push(num, peer.get_data()[num])
+        x+=1
 
     #print tracker.get_peers('torrent1')
     print "----------------------------------------"
     ref.print_swarm()
-    print "Disconnecting peer0..."
+
+    sleep(10)
+    print "Disconnecting peers..."
     peer.stop_interval()
     peer1.stop_interval()
     peer2.stop_interval()
@@ -181,8 +189,17 @@ if __name__ == "__main__":
 
     sleep(10)
     tracker.print_swarm()
-    tracker.stop_interval()
+    #tracker.stop_interval()
 
+    sleep(10)
+    print "Peer 1: ", peer1.print_data()
+    sleep(2)
+    print "Peer 2: ", peer2.print_data()
+    sleep(2)
+    print "Peer 3: ", peer3.print_data()
+    sleep(2)
+    print "Peer 4: ", peer4.print_data()
+    sleep(2)
     tracker.print_swarm()
 
     sleep(1)
