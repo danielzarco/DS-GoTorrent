@@ -1,206 +1,334 @@
-# coding=utf-8
-#Authors: Daniel Zarco,Carlos Rincón
-#Distributed Systems, ETSE
-
 from pyactor.context import set_context, create_host, sleep, shutdown, interval
-import random
+from random import sample, choice
+from pyactor.exceptions import TimeoutError
+from pyactor.proxy import *
+
+data_size = 9
+
+
+class Printer(object):
+    _tell = ['to_print']
+
+    @staticmethod
+    def to_print(string):
+        print string
+
 
 class Tracker(object):
-    _tell = ['announce', 'init_start','stop_interval', 'reduce_tiempo', 'elimina_peers']
-    _ask = ['print_swarm', 'get_peers']
-    _ref = ['announce']
-    swarm = {}
+    _tell = ['announce', 'init_start', 'stop_interval', 'reduce_time', 'add_printer', 'print_swarm']
+    _ask = ['get_peers']
+    _ref = ['announce', 'get_peers', 'add_printer']
 
-    """
-    Concretely, the announce method has two parameters, the hash or id of the torrent to be downloaded,
-    and the reference to the peer that wants to participate in the swarm. For simplicity, you can use the file
-    name as id. Note that, like in BitTorrent , the peer must periodically announce its presence in the swarm.
-    The tracker removes peers from the swarm than do not announce themselves in a period of 10 seconds.
-    The signature of this method is:
-    announce(torrent_hash, peer_ref)
-    """
-    def announce(self, torrent_id, peer_ref):
-        print "Announce " + peer_ref
-        if torrent_id in self.swarm:
-            #print 'El torrent existe en el swarm'
-            if peer_ref in self.swarm[torrent_id]:
-                self.swarm[torrent_id][peer_ref] = 10
-                #print peer_ref + " existe en el sistema"
-            else:
-                #print "Peer not found in in the swarm, adding it..."
-                self.swarm[torrent_id].update({peer_ref: 10})
+    def __init__(self):
+        self.swarm = {}
+        self.printer = None
+        self.interval_reduce = None
+
+    def add_printer(self, printer1):
+        self.printer = printer1
+
+    def announce(self, torrent_id, peer1):
+        if torrent_id in self.swarm.keys():
+            self.swarm[torrent_id][peer1] = 10
         else:
-            #print "Torrent not found. Adding torrent..."
-            self.swarm[torrent_id] = {peer_ref: 10}
+            self.swarm[torrent_id] = {peer1: 10}
 
-        peer = h.lookup(peer_ref)
-        friends = self.get_peers(torrent_id)
-        friends.remove(peer_ref)
-        peer.get_friends(friends)
+    def init_start(self):
+        self.interval_reduce = interval(self.host, 1, self.proxy, "reduce_time")
+
+    def stop_interval(self):
+        self.interval_reduce.set()
+
+    def reduce_time(self):
+        for torrent in self.swarm.keys():
+            for peer_t in self.swarm[torrent].keys():
+                self.swarm[torrent][peer_t] -= 1
+                if self.swarm[torrent][peer_t] <= 0:
+                    del self.swarm[torrent][peer_t]
+
+    def get_peers(self, torrent_id):
+        peer_list = self.swarm[torrent_id].keys()
+        return sample(peer_list, min(3, len(peer_list)))
 
     def print_swarm(self):
         print self.swarm
 
-    #inicia los intervalos
-    def init_start(self):
-        self.interval0= interval(self.host, 1, self.proxy, "reduce_tiempo")
-        self.interval1 = interval(self.host, 10, self.proxy, "elimina_peers")
-
-    def stop_interval(self):
-        print "stopping tracker's interval"
-        self.interval0.set()
-        self.interval1.set()
-
-    #Decrementa contador de cada peer
-    def reduce_tiempo(self):
-        torrents = self.swarm.keys()
-        for torrent in torrents:
-            for peer in self.swarm[torrent].keys():
-                    self.swarm[torrent][peer] -= 1
-
-    #Elimina un peer si no se anuncia en 10 segundos
-    def elimina_peers(self):
-        print "Removing"
-        torrents = self.swarm.keys()
-        for torrent in torrents:
-            for peer in self.swarm[torrent].keys():
-                print "comprobando" + torrent +":"+ peer
-                print self.swarm
-                if self.swarm[torrent][peer] <= 0:
-                    print "contador <= 0"
-                    del self.swarm[torrent][peer]
-                    print self.swarm
-
-
-    # The get_peers method is used to obtain a list of peers participating in this download. The tracker
-    # returns a fixed number of random peers from the swarm. The signature of this method is:
-    # neighbors  get_peers(torrent_hash)
-    def get_peers(self, torrent_id):
-        peer_list = list(self.swarm[torrent_id].keys())
-        final_list = list(random.sample(peer_list, min(5, len(peer_list))))
-        return final_list
 
 class Peer(object):
-    _tell = ['start_announcing', 'announcing', 'add_tracker', 'stop_interval', 'get_friends', 'init_data', 'push']
-    _ask = ['get_id', 'receive_data', 'get_data', 'print_data']
-    _ref = ['announcing', 'push', 'get_data']
-    friends = []
-    data = {}
+    _tell = ['add_tracker', 'add_printer', 'start_announcing', 'stop_announcing', 'announcing',
+             'receive_friends', 'init_data', 'save_gossips']
+    _ask = ['finish', 'get_gossips']
+    _ref = ['add_tracker', 'add_printer', 'start_announcing', 'announcing', 'receive_friends', 'init_data']
 
-    def get_id(self):
-        return self.id
+    def __init__(self):
+        self.friends_ref = []
+        self.data = {}
+        self.gossips = []
+        self.finished = False
+        self.tracker = None
+        self.printer = None
+        self.interval_friends = None
+        self.interval_announce = None
 
-    def add_tracker(self, tracker):
-        self.tracker = tracker
+    def save_gossips(self):
+        self.gossips.append(len(self.data))
+
+    def get_gossips(self):
+        return self.gossips
+
+    def add_tracker(self, track):
+        self.tracker = track
+
+    def finish(self):
+        self.finished = True
+
+    def add_printer(self, printer1):
+        self.printer = printer1
 
     def start_announcing(self, time, torrent):
-        self.interval0 = interval(self.host, time, self.proxy, "announcing", torrent)
-        #self.host.later(10, self.proxy, "stop_interval")
+        self.interval_announce = interval(self.host, time, self.proxy, "announcing", torrent)
+        self.interval_friends = interval(self.host, 2, self.proxy, "receive_friends", torrent)
 
-    def stop_interval(self):
-        print "stopping peer interval"
-        self.interval0.set()
+    def stop_announcing(self):
+        self.interval_announce.set()
+        self.interval_friends.set()
 
-    #Call to the announce method of the tracker
     def announcing(self, torrent):
-        #print self.get_id()+" Announcing "+torrent
-        #self.tracker.init_start()
-        self.tracker.announce(torrent, self.get_id())
+        self.tracker.announce(torrent, self.id)
 
-    #Method to receive the list of neighbours
-    def get_friends(self, friends):
-        self.friends = friends
+    def receive_friends(self, torrent):
+        try:
+            friends = self.tracker.get_peers(torrent)
+            self.friends_ref = []
+            for f in friends:
+                if f != self.id:
+                    self.friends_ref.append(h.lookup(f))
+        except TimeoutError:
+            pass
 
-    def print_data(self):
-        print "This is data", self.data
+    def init_data(self, filename):
+        global data_size
+        data = {}
+        torrent = open(filename, 'r').read()
+        pos = 0
+        for char in torrent:
+            data[pos] = char
+            pos += 1
+        del data[pos - 1]
+        data_size = pos - 1
+        self.data = data
 
-    def get_data(self):
-        return self.data
 
-    #Initializing the string to share (seed)
-    def init_data(self):
-        self.data = {0: 'G', 1: 'O', 2: 'T', 3: 'O', 4: 'R', 5: 'R', 6: 'E', 7: 'N', 8: 'T'}
+class Push(Peer):
+    _tell = Peer._tell + ['start_pushing', 'stop_pushing', 'pushing', 'push']
+    _ref = Peer._ref + ['push']
 
-    #Save the chunk of data sent by another peer
-    def receive_data(self, chunk_id, chunk_data):
-        if chunk_id not in self.data:
-            self.data[chunk_id] = chunk_data
-            print "He recibido: ", self.get_id(), self.data
+    def __init__(self):
+        super(Push, self).__init__()
+        self.interval_push = None
 
-    #Best friends are the neighbours of one peer
+    def start_pushing(self):
+        self.interval_push = interval(self.host, 1, self.proxy, "pushing")
+
+    def stop_pushing(self):
+        self.interval_push.set()
+
+    def pushing(self):
+        for friend in self.friends_ref:
+            if self.data:
+                try:
+                    chunk = choice(self.data.items())
+                    friend.push(chunk[0], chunk[1])
+                except TimeoutError:
+                    pass
+
     def push(self, chunk_id, chunk_data):
-        best_friends = random.sample(self.friends, min(2, len(self.friends)))
-        for best_friend in best_friends:
-            #Sends data to best friend
-            print "my best friend is ", best_friend
-            beffe = h.lookup(best_friend)
-            beffe.receive_data(chunk_id, chunk_data)
+        global cont
+        if self.finished is False:
+            self.data[chunk_id] = chunk_data
+            self.printer.to_print(self.id + " " + str(self.data))
+            if gossip_type == 1:
+                self.save_gossips()
+            if len(self.data.keys()) == data_size:
+                self.finished = True
+                self.printer.to_print(self.id + " has finished")
+                cont += 1
+
+
+class Pull(Peer):
+    _tell = Peer._tell + ['start_pulling', 'stop_pulling', 'pulling', 'receive_pull']
+    _ask = Peer._ask + ['pull']
+    _ref = Peer._ref + ['pull', 'receive_pull']
+
+    def __init__(self):
+        super(Pull, self).__init__()
+        self.interval_pull = None
+
+    def start_pulling(self):
+        self.interval_pull = interval(self.host, 1, self.proxy, "pulling")
+
+    def stop_pulling(self):
+        self.interval_pull.set()
+
+    def pulling(self):
+        if self.finished is False:
+            chunks = list(set(range(data_size)) - set(self.data.keys()))
+            if chunks:
+                for friend in self.friends_ref:
+                    try:
+                        future = friend.pull(choice(chunks), future=True)
+                        future.add_callback('receive_pull')
+                    except IndexError:
+                        pass
+                    except TimeoutError:
+                        pass
+
+    def pull(self, chunk_id):
+        try:
+            return [chunk_id, self.data[chunk_id]]
+        except KeyError:
+            return None
+
+    def receive_pull(self, future):
+        global cont
+        msg = future.result()  # msg brings chunk_id and chunk_data
+        if self.finished is False:
+            if msg:
+                self.data[msg[0]] = msg[1]
+                self.printer.to_print(self.id + " " + str(self.data))
+                if len(self.data.keys()) == data_size:
+                    self.finished = True
+                    self.printer.to_print(self.id + " has finished")
+                    cont += 1
+            self.save_gossips()
+
+
+class Hybrid(Pull, Push):
+    _tell = Pull._tell + Push._tell + ['start_hybrid', 'stop_hybrid', 'push_pull']
+
+    def __init__(self):
+        super(Hybrid, self).__init__()
+        self.interval_hybrid = None
+
+    def start_hybrid(self):
+        self.interval_hybrid = interval(self.host, 1, self.proxy, "push_pull")
+
+    def stop_hybrid(self):
+        self.interval_hybrid.set()
+
+    def push_pull(self):
+        self.pushing()
+        self.pulling()
+
 
 if __name__ == "__main__":
+
+    print "1-Push, 2-Pull, 3-Hybrid"
+    try:
+        gossip_type = int(raw_input('Enter the gossip type:'))
+    except ValueError:
+        print "Not a number"
+
+    n_peers = 0
+    try:
+        n_peers = int(raw_input("Enter the number of peers: "))
+    except ValueError:
+        print "Not a number"
+
+    if gossip_type == 1:
+        peer_class = Push
+    elif gossip_type == 2:
+        peer_class = Pull
+    else:
+        peer_class = Hybrid
+
+    peers = []
+
     set_context()
     h = create_host()
 
+    printer = h.spawn('printer', Printer)
     tracker = h.spawn('tracker', Tracker)
-    ref = h.lookup('tracker')
+    tracker.add_printer(printer)
 
-    peer = h.spawn('peer0', Peer)
-    peer1 = h.spawn('peer1', Peer)
-    peer2 = h.spawn('peer2', Peer)
-    peer3 = h.spawn('peer3', Peer)
-    peer4 = h.spawn('peer4', Peer)
+    seed = h.spawn('seed', peer_class)
+    seed.finish()
+    seed.add_tracker(tracker)
+    seed.add_printer(printer)
+    seed.init_data('torrent.txt')
 
-    peer.init_data()
-    peer.print_data()
+    for i in range(0, n_peers):
+        peer = h.spawn("peer" + str(i), peer_class)
+        peer.add_tracker(tracker)
+        peer.add_printer(printer)
+        peers.append(peer)
 
-    peer.add_tracker(tracker)
-    peer1.add_tracker(tracker)
-    peer2.add_tracker(tracker)
-    peer3.add_tracker(tracker)
-    peer4.add_tracker(tracker)
+    tracker.init_start()  # Start removing inactive peers
+    seed.start_announcing(10, 'torrent1')
+    for p in peers:
+        p.start_announcing(10, 'torrent1')
 
-    tracker.init_start()        #Start removing inactive peers
-    peer.start_announcing(1, 'torrent1')
-    peer1.start_announcing(1, 'torrent1')
-    peer2.start_announcing(1, 'torrent1')
-    peer3.start_announcing(1, 'torrent1')
-    peer4.start_announcing(1, 'torrent1')
+    cont = 0
+    # Begin gossip cycles
+    if gossip_type == 1:
+        seed.start_pushing()
+        for p in peers:
+            p.start_pushing()
+    elif gossip_type == 2:
+        for p in peers:
+            p.start_pulling()
+    else:
+        seed.start_pushing()
+        for p in peers:
+            p.start_hybrid()
 
+    completed = False
+    while completed is False:
+        if cont == n_peers:
+            completed = True
+    # End of gossip cycles
+    if gossip_type == 1:
+        seed.stop_pushing()
+        for i in peers:
+            i.stop_pushing()
 
-    sleep(3)
-    x=0
+    elif gossip_type == 2:
+        for i in peers:
+            i.stop_pulling()
 
+    else:
+        seed.stop_pushing()
+        for i in peers:
+            i.stop_hybrid()
 
-    while x<20:
-        num=random.randint(0, 8)
-        peer.push(num, peer.get_data()[num])
-        x+=1
+    print "Stopping announce..."
+    seed.stop_announcing()
+    for i in peers:
+        i.stop_announcing()
 
-    #print tracker.get_peers('torrent1')
-    print "----------------------------------------"
-    ref.print_swarm()
-
-    sleep(10)
-    print "Disconnecting peers..."
-    peer.stop_interval()
-    peer1.stop_interval()
-    peer2.stop_interval()
-    peer3.stop_interval()
-    peer4.stop_interval()
-
-    sleep(10)
+    sleep(15)
+    print "SWARM:"
     tracker.print_swarm()
-    #tracker.stop_interval()
+    tracker.stop_interval()
+    sleep(.1)
 
-    sleep(10)
-    print "Peer 1: ", peer1.print_data()
-    sleep(2)
-    print "Peer 2: ", peer2.print_data()
-    sleep(2)
-    print "Peer 3: ", peer3.print_data()
-    sleep(2)
-    print "Peer 4: ", peer4.print_data()
-    sleep(2)
-    tracker.print_swarm()
+    var = 0
+    average_gossips = 0
+    print "GOSSIP RESULTS:"
+    if gossip_type == 1:
+        print "-PUSH"
+    elif gossip_type == 2:
+        print "-PULL"
+    else:
+        print "-HYBRID"
+    print "PEER   | GOSSIPS | DATA PER GOSSIP"
+    for peer in peers:
+        values = peer.get_gossips()
+        gossips = len(values)
+        print "peer", var, "|   ", gossips, "   |", values
+        var += 1
+        average_gossips += gossips
+    print "AVERAGE GOSSIPS :", average_gossips / n_peers
 
-    sleep(1)
     shutdown()
+
